@@ -1,11 +1,11 @@
 /*
- * Milestone 4: act as iBoot for xnu.
+ * Milestone 4: act as iBoot for xnu on Samsung Galaxy A51 5G (SC-54A / SM7250).
  *
  * mkpayload.py already resolved the kernel's chained fixups and built the
- * ADT, so this only has to: find the payload in the ABL ramdisk, copy the
- * segments to phys_base + (vmaddr - virt_base), place the ADT and
- * boot_args behind the kernel, and jump to the entry point with the MMU
- * and caches off, x0 = boot_args (physical).
+ * ADT, so this only has to: find the payload in the ramdisk or appended to the
+ * kernel Image, copy the segments to phys_base + (vmaddr - virt_base),
+ * place the ADT and boot_args behind the kernel, and jump to the entry point
+ * with the MMU and caches off, x0 = boot_args (physical).
  */
 #include <stdint.h>
 #include "console.h"
@@ -67,28 +67,53 @@ static void zero64(uintptr_t dst, uint64_t n)
 
 static int magic_ok(const char *m)
 {
-	static const char want[] = "SWEETXNU";
-	for (int i = 0; i < 8; i++)
-		if (m[i] != want[i])
-			return 0;
-	return 1;
+	static const char want1[] = "SC54AXNU";
+	static const char want2[] = "SWEETXNU";
+	int ok1 = 1, ok2 = 1;
+	for (int i = 0; i < 8; i++) {
+		if (m[i] != want1[i]) ok1 = 0;
+		if (m[i] != want2[i]) ok2 = 0;
+	}
+	return ok1 || ok2;
 }
 
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
+extern char _end[];
+
 const char *loader_boot(uintptr_t dtb)
 {
-	uint64_t rd_start, rd_end;
+	uint64_t rd_start = 0, rd_end = 0;
+	uintptr_t emb = ((uintptr_t)_end + 0xfff) & ~0xfffUL;
 
-	if (!fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) ||
-	    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end))
-		return "no initrd in /chosen";
-	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
+	/*
+	 * SC-54A: Support both an embedded payload (appended to Image after _end,
+	 * ideal for Samsung Odin boot.img flashing) and a standard ramdisk payload
+	 * passed via /chosen.
+	 */
+	if (magic_ok((const char *)emb)) {
+		rd_start = emb;
+		rd_end = emb + 0x8000000;
+		con_hex("EMBED", emb);
+	} else {
+		if (!fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) ||
+		    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end))
+			return "no initrd in /chosen";
+		con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
+	}
 
-	const struct payload *p = (const struct payload *)rd_start;
-	if (!magic_ok(p->magic))
-		return "no SWEETXNU payload";
-	if (p->version != 1 || (p->adt_off & 7) || (rd_start & 7))
+	uintptr_t hit = 0;
+	for (uintptr_t a = rd_start; a + 8 <= rd_end; a++) {
+		if (magic_ok((const char *)a)) {
+			hit = a;
+			break;
+		}
+	}
+	if (!hit)
+		return "no XNU payload found";
+
+	const struct payload *p = (const struct payload *)hit;
+	if (p->version != 1 || (p->adt_off & 7) || (hit & 7))
 		return "bad payload header";
 
 	uint64_t pa_of_va_base = p->phys_base - p->virt_base;	/* pa = va + this */
@@ -103,7 +128,7 @@ const char *loader_boot(uintptr_t dtb)
 	for (uint32_t i = 0; i < p->nsegs; i++) {
 		const struct payload_seg *s = &p->segs[i];
 		uintptr_t dst = s->vmaddr + pa_of_va_base;
-		copy64(dst, rd_start + s->file_off, s->file_size);
+		copy64(dst, hit + s->file_off, s->file_size);
 		if (s->vmsize > s->file_size)
 			zero64(dst + ((s->file_size + 7) & ~7UL), s->vmsize - ((s->file_size + 7) & ~7UL));
 	}
@@ -111,7 +136,7 @@ const char *loader_boot(uintptr_t dtb)
 
 	/* ADT, then boot_args, behind the kernel; everything below topOfKernelData is ours. */
 	uintptr_t adt_pa = p->kernel_end + pa_of_va_base;
-	copy64(adt_pa, rd_start + p->adt_off, p->adt_size);
+	copy64(adt_pa, hit + p->adt_off, p->adt_size);
 	uintptr_t ba_pa = (adt_pa + p->adt_size + PAGE_16K - 1) & ~(PAGE_16K - 1);
 	uintptr_t top = ba_pa + PAGE_16K;
 

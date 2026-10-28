@@ -1,7 +1,8 @@
 #pragma once
 #include <stdint.h>
 
-#define FB_PHYS	0x9c000000UL
+/* Samsung Galaxy A51 5G (SC-54A / SM7250) framebuffer physical base */
+#define FB_PHYS	0xa0000000UL
 
 struct mmu_info {
 	uint64_t img_lo, img_hi, ttbr;
