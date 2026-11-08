@@ -376,37 +376,33 @@ void shim_main(uint64_t dtb)
 
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
-	con_clear(RED);
-	con_str("SHIM", "sc-54a milestone 4: xnu loader");
-	con_skip();
+	con_clear(BLACK);
 	const char *why = loader_boot(dtb);
-	con_str("LOADER", why);
-	con_skip();
 
-	/* No payload: probe the internal UFS while the MMU is still off. */
-	stage = "ufs";
-	test_ufs();
-	con_skip();
-	/* Keep the probe results on screen (later tests clear it); reset after 3 min. */
-	con_str("UFS", "probe done, reset in ~3 min");
-	delay_ms(180000);
-	reset(20);
-
+	/*
+	 * Benchmark memory & display fill bandwidth before drawing the
+	 * diagnostic dashboard, so the fill tests don't overwrite the log.
+	 * Using BLACK (0x00000000) keeps the AMOLED completely unlit (0 nits).
+	 */
 	stage = "fill off";
-	uint64_t fill_off = ticks_fill(RED);
+	uint64_t fill_off = ticks_fill(BLACK);
 	uint64_t mem_off = ticks_mem();
 
 	stage = "mmu enable";
 	int rc = mmu_enable(&mi);
 
 	stage = "fill on";
-	uint64_t fill_on = rc ? 0 : ticks_fill(RED);
+	uint64_t fill_on = rc ? 0 : ticks_fill(BLACK);
 	uint64_t mem_on = rc ? 0 : ticks_mem();
-	if (rc)
-		con_clear(RED);
 
-	con_str("SHIM", "sc-54a milestone 3");
+	con_clear(BLACK);
+
+	/* Diagnostic & Loader Information */
+	con_str("APPLE", "iOS 16 Bare-Metal Bootloader");
+	con_str("DEVICE", "Samsung Galaxy A51 5G (SC-54A)");
+	con_str("LOADER", why);
 	con_skip();
+
 	con_hex2("DTB", "at=", dtb, "magic=", dtb ? __builtin_bswap32(rd32(dtb)) : 0);
 	con_hex2("IMAGE", "lo=", mi.img_lo, "hi=", mi.img_hi);
 	con_hex2("MMU", "rc=", rc, "l3=", mi.n_l3);
@@ -416,11 +412,13 @@ void shim_main(uint64_t dtb)
 	con_hex("TCR", rsr("tcr_el1"));
 	con_hex2("PARANGE", "mmfr0=", rsr("id_aa64mmfr0_el1") & 0xf, "tg16=", (rsr("id_aa64mmfr0_el1") >> 20) & 0xf);
 	con_skip();
+
 	con_hex("PAR img", mmu_probe((uintptr_t)shim_main));
 	con_hex("PAR fb", mmu_probe(FB_PHYS + 0x1000));
 	con_hex("PAR gic", mmu_probe(GICD_BASE));
 	con_hex("PAR 12G", mmu_probe(0x300000000UL));
 	con_skip();
+
 	con_hex2("FILL us", "off=", to_us(fill_off), "on=", to_us(fill_on));
 	con_hex2("MEM us", "off=", to_us(mem_off), "on=", to_us(mem_on));
 	con_skip();
@@ -431,5 +429,8 @@ void shim_main(uint64_t dtb)
 	test_gic();
 
 	stage = "done";
-	reset(40);
+	con_skip();
+	con_str("STATUS", "SC-54A HARDWARE READY (DARK MODE)");
+	for (;;)
+		__asm__ volatile("wfe");
 }

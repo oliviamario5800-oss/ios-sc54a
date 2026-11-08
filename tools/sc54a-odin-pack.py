@@ -87,10 +87,11 @@ if __name__ == '__main__':
     parser.add_argument('--boot', help="Path to boot.img")
     parser.add_argument('--userdata', help="Path to userdata/rootfs image")
     parser.add_argument('--recovery', help="Path to recovery.img")
+    parser.add_argument('--vbmeta', help="Path to vbmeta.img")
     parser.add_argument('--out', help="Path to output .tar or .tar.md5 archive")
     args = parser.parse_args()
 
-    if args.boot or args.userdata or args.recovery:
+    if args.boot or args.userdata or args.recovery or args.vbmeta:
         mapping = {}
         if args.boot:
             mapping['boot.img'] = args.boot
@@ -98,6 +99,8 @@ if __name__ == '__main__':
             mapping['userdata.img'] = args.userdata
         if args.recovery:
             mapping['recovery.img'] = args.recovery
+        if args.vbmeta:
+            mapping['vbmeta.img'] = args.vbmeta
         out_path = args.out or 'shim/out/AP_ios_sc54a.tar.md5'
         if not make_tar_md5(mapping, out_path):
             sys.exit(1)

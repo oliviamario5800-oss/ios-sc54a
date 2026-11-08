@@ -7,11 +7,14 @@
 #define FB_H		2400
 #define FB_STRIDE	(FB_W * 4)	/* a8r8g8b8, 1080 * 4 = 4320 */
 
+#define BLACK	0xff000000U
 #define RED	0xffff0000U
 #define BLUE	0xff0000a0U
 #define WHITE	0xffffffffU
 #define YELLOW	0xffffff00U
 #define GREEN	0xff00ff00U
+#define CYAN	0xff00e5ffU
+#define GRAY	0xff888888U
 
 extern volatile uint32_t *con_fb;
 

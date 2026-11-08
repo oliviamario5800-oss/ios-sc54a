@@ -1,6 +1,6 @@
 /*
  * Just enough flattened-device-tree parsing to find what ABL put in
- * /chosen (initrd location). Big-endian, 4-byte aligned tokens.
+ * /chosen (initrd location) and /memory (DDR banks). Big-endian, 4-byte aligned tokens.
  */
 #include "fdt.h"
 
@@ -21,6 +21,15 @@ static int streq(const char *a, const char *b)
 	while (*a && *a == *b)
 		a++, b++;
 	return *a == *b;
+}
+
+static int is_mem_node(const char *name)
+{
+	static const char pfx[] = "memory";
+	for (int i = 0; i < 6; i++)
+		if (name[i] != pfx[i])
+			return 0;
+	return name[6] == '\0' || name[6] == '@';
 }
 
 static uintptr_t align4(uintptr_t a)
@@ -79,6 +88,61 @@ int fdt_chosen_u64(uintptr_t fdt, const char *prop, uint64_t *out)
 			break;
 		default:	/* FDT_END or garbage */
 			return 0;
+		}
+	}
+}
+
+int fdt_high_memory(uintptr_t fdt, uint64_t *base_out, uint64_t *size_out)
+{
+	if (!fdt || be32(fdt) != FDT_MAGIC)
+		return 0;
+	uintptr_t p = fdt + be32(fdt + 8);
+	uintptr_t strings = fdt + be32(fdt + 12);
+	int depth = 0, in_mem = 0, found = 0;
+	uint64_t best_base = 0, best_size = 0;
+
+	for (;;) {
+		uint32_t tok = be32(p);
+		p += 4;
+		switch (tok) {
+		case FDT_BEGIN_NODE: {
+			const char *name = (const char *)p;
+			depth++;
+			in_mem = (depth == 2 && is_mem_node(name));
+			p = align4(skip_str(p));
+			break;
+		}
+		case FDT_END_NODE:
+			if (depth == 2)
+				in_mem = 0;
+			depth--;
+			break;
+		case FDT_PROP: {
+			uint32_t len = be32(p), nameoff = be32(p + 4);
+			uintptr_t val = p + 8;
+			if (in_mem && streq((const char *)(strings + nameoff), "reg") &&
+			    len >= 16 && (len % 16) == 0) {
+				for (uint32_t off = 0; off < len; off += 16) {
+					uint64_t b = (uint64_t)be32(val + off) << 32 | be32(val + off + 4);
+					uint64_t s = (uint64_t)be32(val + off + 8) << 32 | be32(val + off + 12);
+					if (s && (!found || b > best_base)) {
+						best_base = b;
+						best_size = s;
+						found = 1;
+					}
+				}
+			}
+			p = align4(val + len);
+			break;
+		}
+		case FDT_NOP:
+			break;
+		default:
+			if (found) {
+				*base_out = best_base;
+				*size_out = best_size;
+			}
+			return found;
 		}
 	}
 }

@@ -3,3 +3,6 @@
 
 /* Read a u32/u64 (cell-size agnostic) property of /chosen. Returns 0 if absent. */
 int fdt_chosen_u64(uintptr_t fdt, const char *prop, uint64_t *out);
+
+/* Find the highest /memory* reg bank (64-bit base & size). Returns 0 if absent. */
+int fdt_high_memory(uintptr_t fdt, uint64_t *base_out, uint64_t *size_out);

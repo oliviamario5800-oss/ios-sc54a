@@ -11,17 +11,21 @@ import hashlib, os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adt  # noqa: E402
 
-# Kernel-managed RAM: above every Qualcomm XPU carve-out
-PHYS_BASE = 0xb0000000
-MEM_SIZE = 0x4d000000
+# Kernel-managed RAM on SC-54A (6 GB SM7250 upper DDR bank <0x1_00000000 0xfcc00000>):
+# Low bank 0xb0000000..0xeb800000 has Samsung Knox RKP (0xb1000000), sec_debug (0xb0000000),
+# modem_shared_mem XPU carve-out (0xc0000000..0xc6000000), and camera_mem (0xc6000000..0xeb800000).
+# Upper bank only has sec_debug_rdx_bootdev@0 at 0x100000000..0x10ad00000.
+# 0x10c000000..0x1f0000000 (3.5625 GiB, 32 MiB L2-block aligned) is 100% carve-out free.
+PHYS_BASE = 0x10c000000
+MEM_SIZE = 0xe4000000
 # Panic log buffer, carved from the TOP of the dram range and exposed to XNU as
 # /pram + /chosen/embedded-panic-log-size.
 PANIC_LOG_SIZE = 0x100000
-# --highmem (phone only): the whole upper DDR bank on SM7250.
-# The memory node has <0x80000000 2G>, <0x1_00000000 0xfcc00000>;
-# every fixed reserved-memory carve-out is in the low bank.
-HIGH_PHYS_BASE = 0x100000000
-HIGH_MEM_SIZE = 0xfcc00000
+# --highmem selects the same clean upper DDR bank on SC-54A; QEMU virt uses 0xb0000000.
+HIGH_PHYS_BASE = 0x10c000000
+HIGH_MEM_SIZE = 0xe4000000
+QEMU_PHYS_BASE = 0xb0000000
+QEMU_MEM_SIZE = 0x4d000000
 # /arm-io children are relative to this; it must not be 0 (serial_init bails)
 SOC_BASE = 0x01000000
 
@@ -75,8 +79,13 @@ def node(name, props=(), children=()):
 
 
 def build(seed=None, qemu=False, highmem=False):
-    """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ."""
-    phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
+    """qemu=True: same tree, but with QEMU virt's RAM, GIC addresses and CNTFRQ."""
+    if qemu and not highmem:
+        phys_base, mem_size = QEMU_PHYS_BASE, QEMU_MEM_SIZE
+    elif highmem:
+        phys_base, mem_size = HIGH_PHYS_BASE, HIGH_MEM_SIZE
+    else:
+        phys_base, mem_size = PHYS_BASE, MEM_SIZE
     # Carve the panic log off the top so the kernel never allocates over it.
     panic_base = phys_base + mem_size - PANIC_LOG_SIZE
     mem_size -= PANIC_LOG_SIZE
@@ -122,7 +131,7 @@ def build(seed=None, qemu=False, highmem=False):
         cpu_nodes.append(node(f'cpu{core}', [
             ph(),
             ('device_type', cstr('cpu')),
-            ('compatible', cstr('qcom,kryo475') + cstr('ARM,v8')),
+            ('compatible', cstr('qcom,kryo475') + cstr('qcom,kryo470') + cstr('ARM,v8')),
             ('reg', u32(core << 8)),  # actual MPIDR Aff1:Aff0 (0x000..0x700)
             ('cpu-id', u32(core)),
             ('cluster-id', u32(0)),
@@ -151,8 +160,8 @@ def build(seed=None, qemu=False, highmem=False):
     ])
     arm_io = node('arm-io', [
         ph(),
-        ('device_type', cstr('sc54a-io')),
-        ('compatible', cstr('sc54a-io') + cstr('arm-io')),
+        ('device_type', cstr('sweet-io')),
+        ('compatible', cstr('sweet-io') + cstr('sc54a-io') + cstr('arm-io')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
         ('ranges', u64(0, SOC_BASE, 0x100000000 - SOC_BASE)),
@@ -161,13 +170,13 @@ def build(seed=None, qemu=False, highmem=False):
         node('disp0', [
             ph(),
             ('device_type', cstr('display-subsystem')),
-            ('compatible', cstr('sc54a,display')),
+            ('compatible', cstr('sweet,display') + cstr('sc54a,display')),
             ('canvas-width', u32(1125)),
             ('canvas-height', u32(2436)),
             ('dot-pitch', u32(DOT_PITCH)),
         ])])
 
-    fbcon = node('sc54a-fbcon', [
+    fbcon = node('sweet-fbcon', [
         ph(),
         ('reg', u64(FB, FB_SIZE)),
         ('width', u32(FB_W)),
@@ -175,7 +184,7 @@ def build(seed=None, qemu=False, highmem=False):
         ('stride', u32(FB_STRIDE)),
     ])
 
-    ufs = node('sc54a-ufs', [
+    ufs = node('sweet-ufs', [
         ph(),
         ('compatible', cstr('qcom,ufshc')),
         ('reg', u64(UFS, UFS_SIZE)),
@@ -197,7 +206,7 @@ def build(seed=None, qemu=False, highmem=False):
 
     return node('device-tree', [
         ph(),
-        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('samsung,sc54a') + cstr('samsung,a51xq') + cstr('qcom,sm7250') + cstr('AppleARM')),
+        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,sweet') + cstr('samsung,sc54a') + cstr('samsung,a51xq') + cstr('qcom,sm7250') + cstr('AppleARM')),
         ('model', cstr('iPhone10,3')),
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),

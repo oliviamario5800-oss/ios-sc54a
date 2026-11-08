@@ -77,14 +77,50 @@ static int magic_ok(const char *m)
 	return ok1 || ok2;
 }
 
+static uint64_t read_ctr_el0(void)
+{
+	uint64_t v;
+	__asm__ volatile("mrs %0, ctr_el0" : "=r"(v));
+	return v;
+}
+
+static uint64_t read_current_el(void)
+{
+	uint64_t v;
+	__asm__ volatile("mrs %0, CurrentEL" : "=r"(v));
+	return (v >> 2) & 3;
+}
+
+/*
+ * ABL ran with MMU + D-cache enabled; we write XNU segments with MMU off
+ * (Device-nGnRnE, bypassing cache). Clean + invalidate PoC over the target
+ * physical range so XNU sees coherent instructions, page tables, and boot_args
+ * the instant it enables SCTLR_EL1.M|C|I.
+ */
+static void dcache_clean_inval_range(uintptr_t start, uintptr_t end)
+{
+	uint64_t line = 4UL << ((read_ctr_el0() >> 16) & 0xf);
+	for (uintptr_t a = start & ~(line - 1); a < end; a += line)
+		__asm__ volatile("dc civac, %0" : : "r"(a) : "memory");
+	__asm__ volatile("dsb sy" ::: "memory");
+}
+
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
-extern char _end[];
+extern char _head[], _end[];
 
 const char *loader_boot(uintptr_t dtb)
 {
 	uint64_t rd_start = 0, rd_end = 0;
+	uint64_t hi_base = 0, hi_size = 0;
 	uintptr_t emb = ((uintptr_t)_end + 0xfff) & ~0xfffUL;
+
+	con_str("SHIM", "SC-54A XNU Loader v2");
+	con_hex2("SHIMIMG", "lo=", (uint32_t)(uintptr_t)_head, "el=", (uint32_t)read_current_el());
+	if (fdt_high_memory(dtb, &hi_base, &hi_size)) {
+		con_hex("RAMHI_B", hi_base);
+		con_hex("RAMHI_S", hi_size);
+	}
 
 	/*
 	 * SC-54A: Support both an embedded payload (appended to Image after _end,
@@ -116,8 +152,11 @@ const char *loader_boot(uintptr_t dtb)
 	if (p->version != 1 || (p->adt_off & 7) || (hit & 7))
 		return "bad payload header";
 
+	rd_end = hit + p->adt_off + p->adt_size;
+
 	uint64_t pa_of_va_base = p->phys_base - p->virt_base;	/* pa = va + this */
-	con_hex2("PHYS", "base=", p->phys_base, "size=", p->mem_size);
+	con_hex("PHYS_B", p->phys_base);
+	con_hex("PHYS_S", p->mem_size);
 	con_hex("VIRT", p->virt_base);
 	con_hex("ENTRY", p->entry_va);
 
@@ -132,7 +171,7 @@ const char *loader_boot(uintptr_t dtb)
 		if (s->vmsize > s->file_size)
 			zero64(dst + ((s->file_size + 7) & ~7UL), s->vmsize - ((s->file_size + 7) & ~7UL));
 	}
-	con_hex2("SEGS", "n=", p->nsegs, "end=", p->kernel_end + pa_of_va_base);
+	con_hex("SEGSEND", p->kernel_end + pa_of_va_base);
 
 	/* ADT, then boot_args, behind the kernel; everything below topOfKernelData is ours. */
 	uintptr_t adt_pa = p->kernel_end + pa_of_va_base;
@@ -159,13 +198,20 @@ const char *loader_boot(uintptr_t dtb)
 	for (int i = 0; i < BOOT_LINE_LENGTH; i++)
 		ba->CommandLine[i] = p->cmdline[i];
 	ba->memSizeActual = p->mem_size;
-	con_hex2("BOOTARG", "pa=", ba_pa, "top=", top);
+	con_hex("BOOTARG", ba_pa);
 
 	uintptr_t entry_pa = p->entry_va + pa_of_va_base;
-	con_hex("JUMP", entry_pa);
-	con_str("XNU", "jumping (fbcon clears screen)");
+	uint32_t e0 = *(volatile uint32_t *)entry_pa;
+	uint32_t e1 = *(volatile uint32_t *)(entry_pa + 0x1c64);
+	con_hex2("VERIFY", "e0=", e0, "e1=", e1);
+	if (e0 != 0x14000719U)
+		return "XNU entry mismatch (payload truncated)";
 
-	/* Everything was written with the MMU and caches off; drop any stale I-cache lines too. */
+	con_hex("JUMP", entry_pa);
+	con_str("XNU", "cleaning caches & jumping...");
+
+	/* Clean/invalidate PoC over kernel+ADT+boot_args and flush I-cache before XNU turns MMU on. */
+	dcache_clean_inval_range(p->phys_base, top);
 	__asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");
 	((xnu_entry_t)entry_pa)(ba_pa);
 	return "xnu returned";

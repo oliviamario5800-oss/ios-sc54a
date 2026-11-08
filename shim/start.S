@@ -1,6 +1,7 @@
 /*
  * sweet boot shim entry: arm64 Linux Image header so Qualcomm ABL treats
- * us like a kernel. ABL enters at EL1, MMU/D-cache off, x0 = DTB pointer.
+ * us like a kernel. ABL on Qualcomm SM7250 / Samsung Galaxy A51 5G (SC-54A)
+ * enters at EL2 or EL1, MMU/D-cache off, x0 = DTB pointer.
  */
 	.section .text.head, "ax"
 	.globl _head
@@ -20,13 +21,42 @@ _head:
 	.globl _start
 _start:
 	msr	daifset, #0xf
-	mov	x19, x0			/* DTB pointer from ABL */
+	mov	x19, x0			/* Preserve DTB pointer from ABL in callee-saved reg */
+
+	/* Check CurrentEL: Samsung ABL enters at EL2 or EL1 */
+	mrs	x1, CurrentEL
+	and	x1, x1, #0xc
+	cmp	x1, #0x8		/* 0x8 = EL2, 0x4 = EL1 */
+	b.ne	.L_el1_entry
+
+	/* --- Running at EL2: drop cleanly to EL1 --- */
+	mrs	x1, cnthctl_el2
+	orr	x1, x1, #0x3		/* EL1PCEN | EL1PCTEN */
+	msr	cnthctl_el2, x1
+	msr	cntvoff_el2, xzr
+
+	msr	cptr_el2, xzr
+
+	mov	x1, #(1 << 31)		/* HCR_EL2.RW = 1 (AArch64 EL1) */
+	msr	hcr_el2, x1
+
+	mov	x1, #0x3c5		/* EL1h mode, DAIF masked */
+	msr	spsr_el2, x1
+
+	adr	x1, .L_el1_entry
+	msr	elr_el2, x1
+	isb
+	eret
+
+.L_el1_entry:
+	msr	daifset, #0xf
 	msr	spsel, #1
 	adr	x1, _stack_top
 	mov	sp, x1
 	adr	x1, vectors
 	msr	vbar_el1, x1
 	isb
+
 	/* zero .bss */
 	adr	x1, _bss_start
 	adr	x2, _bss_end
@@ -34,7 +64,7 @@ _start:
 	b.hs	2f
 	str	xzr, [x1], #8
 	b	1b
-2:	mov	x0, x19
+2:	mov	x0, x19			/* Restore DTB pointer */
 	bl	shim_main
 3:	wfe
 	b	3b
@@ -42,6 +72,28 @@ _start:
 /* PSCI CPU_ON target. x0 = context id = cpu index (1..7). */
 	.globl secondary_entry
 secondary_entry:
+	msr	daifset, #0xf
+
+	mrs	x1, CurrentEL
+	and	x1, x1, #0xc
+	cmp	x1, #0x8
+	b.ne	.L_sec_el1_entry
+
+	mrs	x1, cnthctl_el2
+	orr	x1, x1, #0x3
+	msr	cnthctl_el2, x1
+	msr	cntvoff_el2, xzr
+	msr	cptr_el2, xzr
+	mov	x1, #(1 << 31)
+	msr	hcr_el2, x1
+	mov	x1, #0x3c5
+	msr	spsr_el2, x1
+	adr	x1, .L_sec_el1_entry
+	msr	elr_el2, x1
+	isb
+	eret
+
+.L_sec_el1_entry:
 	msr	daifset, #0xf
 	msr	spsel, #1
 	adr	x1, _sec_stacks
