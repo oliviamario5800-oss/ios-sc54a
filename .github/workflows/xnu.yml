@@ -123,3 +123,4 @@ jobs:
           path: out/
           if-no-files-found: warn
 # retrigger 2026-11-09: run 42616949440 was cancelled by GitHub before runner assignment; no code change
+# retrigger 2026-11-09 #2: run 42620680313 also lost to macOS runner capacity (job never acquired)
