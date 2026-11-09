@@ -1,0 +1,71 @@
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -500,6 +500,58 @@
+ 	return 0;
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_SC54A)
++/*
++ * SC54A: on the run #7 probe boot, touch_se_init() failed on exactly one
++ * clause -- (touch_rd(st.se, 0x64) & 1u) -- while proto (3), both FIFO
++ * geometries (32-bit, depth 16) and SE_STATUS (0x40 == 0) all passed, so
++ * ABL left something latched on SE7. The upstream sweet driver reads
++ * 0x64 as a busy bit, but its exact datasheet identity on Lito is
++ * unverified (Linux QUPv3 maps clock/FW-revision registers into
++ * 0x60-0x6c, so do not call it GENI_STATUS): treat it empirically.
++ * If the bit is set, issue the standard GENI master abort (SE_CTRL = 2,
++ * SE_I2C_ABORT) and log the before/after state; the existing gate below
++ * stays the judge -- if the bit does not clear, init still returns false
++ * exactly as before, and the log shows whether the abort moved it at
++ * all. Deliberately does NOT set st.dead: a missing ABORT_DONE must not
++ * poison a bus the gate would otherwise accept.
++ */
++static void
++touch_sc54a_clear_stale_cmd(void)
++{
++	uint32_t reg64 = touch_rd(st.se, 0x64);
++	uint32_t status = touch_rd(st.se, SE_STATUS);
++	bool done;
++	unsigned i;
++
++	if (!(reg64 & 1u)) {
++		printf("SC54A TOUCH: stale-cmd check: reg64=%#x status=%#x; clear\n",
++		    reg64, status);
++		return;
++	}
++	printf("SC54A TOUCH: stale-cmd check: reg64=%#x status=%#x; aborting\n",
++	    reg64, status);
++	touch_wr(st.se, SE_CTRL, 2); /* abort M command, release held bus */
++	done = false;
++	for (i = 0; i < 5000; ++i) {
++		if (touch_rd(st.se, SE_IRQ) & (1u << 5)) {
++			done = true;
++			break;
++		}
++		delay(1);
++	}
++	(void)touch_wait_clear(st.se, SE_STATUS, 1u);
++	for (i = 0; i < 64 && (touch_rd(st.se, SE_RX_COUNT) & 0x1ffffffu); ++i) {
++		(void)touch_rd(st.se, SE_RX);
++	}
++	touch_wr(st.se, SE_IRQ_CLR, 0xffffffffu);
++	printf("SC54A TOUCH: stale-cmd after: abort_done=%u reg64=%#x status=%#x irq=%#x txcnt=%#x rxcnt=%#x\n",
++	    done ? 1u : 0u, touch_rd(st.se, 0x64), touch_rd(st.se, SE_STATUS),
++	    touch_rd(st.se, SE_IRQ), touch_rd(st.se, SE_TX_COUNT),
++	    touch_rd(st.se, SE_RX_COUNT));
++}
++#endif /* ARM64_BOARD_CONFIG_SC54A */
++
+ static bool
+ touch_se_init(void)
+ {
+@@ -508,6 +560,9 @@
+ 	printf("SWEET TOUCH: se7 fw=%#x proto=%u status=%#x tx=%#x rx=%#x ios=%#x\n",
+ 	    fw, (fw >> 8) & 0xffu, touch_rd(st.se, SE_STATUS), tx, rx,
+ 	    touch_rd(st.se, 0x908));
++#if defined(ARM64_BOARD_CONFIG_SC54A)
++	touch_sc54a_clear_stale_cmd();
++#endif
+ 	if (((fw >> 8) & 0xffu) != 3u || (touch_rd(st.se, 0x64) & 1u) ||
+ 	    ((tx >> 24) & 0x3fu) != 32u || ((rx >> 24) & 0x3fu) != 32u ||
+ 	    ((tx >> 16) & 0x3fu) < 2u || ((rx >> 16) & 0x3fu) < 2u) {
